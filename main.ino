@@ -14,13 +14,14 @@ HardwareSerial MAVSerial(2); // UART2 on ESP32
 
 //Timing variables
 bool debug_mode = true;
-unsigned long last_heartbeat_received = millis();
-unsigned long heartbeat_outdate_time = 5000;  //0.5s
-unsigned long last_IMU_info_printed = millis();
-unsigned long IMU_info_period = 10000;
+unsigned long last_heartbeat_received = 0;
+unsigned long heartbeat_outdate_time = 2000;  //2s, if you think heartbeat is too long, change ardupilot parameter list
+unsigned long last_debug = 0;
+unsigned long debug_period = 300;  //0.3s
 
 //Positioning Data
 mavlink_raw_imu_t imu_info;
+mavlink_attitude_t attitude_info;
 
 void setup() {
   Serial.begin(57600);  //Debug console
@@ -31,12 +32,15 @@ void setup() {
   MAVSerial.begin(57600, SERIAL_8N1, 16, 17);
   delay(1000);  //General Waiting
   sendHeartbeat();  //Optional, just tell fc that ESP is in the town
+
+  //Reset time variable(s)
+  last_debug = millis();
   Serial.println("Setup DONE, start receiving MAVLink");
 }
 
 void loop() {
   //Check heartbeat
-  if((millis() - last_heartbeat_received) > heartbeat_outdate_time)
+  if((millis() - last_heartbeat_received) >= heartbeat_outdate_time)
   {
     Serial.print("WARNING: Last Received Heartbeat is ");
     Serial.print((millis() - last_heartbeat_received)/1000.0);
@@ -46,7 +50,7 @@ void loop() {
   //Debug Mode
   if(debug_mode)
   { //IMU Info
-    if(millis() - last_IMU_info_printed > IMU_info_period)
+    if(millis() - last_debug >= debug_period)
     {
       //IMU Info
       // typedef struct __mavlink_raw_imu_t {
@@ -64,14 +68,17 @@ void loop() {
       // int16_t temperature; /*< [cdegC] Temperature, 0: IMU does not provide temperature values. If the IMU is at 0C it must send 1 (0.01C).*/
       // }) mavlink_raw_imu_t;
       
-      printRawIMUInfo(imu_info);        //Print that 
-      last_IMU_info_printed = millis(); //Updated last print time
+      printRawIMUInfo(imu_info);  //IMU info
+      printAttitude(attitude_info); //Attitude
+
+      //Last
+      last_debug = millis(); //Updated last print time
     }
   }
   
   //Start Receiving
   mavlinkReceive();
-  delay(10);  //General delay
+  //delay(10);  //General delay
 }
 
 void sendHeartbeat() {
@@ -135,12 +142,16 @@ void mavlinkReceive() {
         case 27: //RAW_IMU
           mavlink_msg_raw_imu_decode(&msg, &imu_info);
           break;
+        case 30: //ATTITUDE
+          mavlink_msg_attitude_decode(&msg, &attitude_info);
+          break;
       }
     }
   }
 }
 
 //Debug Function(s)
+//IMU
 void printRawIMUInfo(const mavlink_raw_imu_t& imu) {
   Serial.print("IMU[");
   Serial.print(imu.id);
@@ -164,4 +175,18 @@ void printRawIMUInfo(const mavlink_raw_imu_t& imu) {
     Serial.print("°C");
   }
   Serial.println();
+}
+
+//Attitude
+void printAttitude(const mavlink_attitude_t& attitude) {
+  float roll_deg = attitude.roll * 57.2958;
+  float pitch_deg = attitude.pitch * 57.2958;
+  float yaw_deg = attitude.yaw * 57.2958;
+  if (yaw_deg < 0) yaw_deg += 360;
+  
+  Serial.printf("ATTITUDE: R:%6.1f° P:%6.1f° Y:%6.1f° | Rates R:%5.1f P:%5.1f Y:%5.1f°/s\n",
+                roll_deg, pitch_deg, yaw_deg,
+                attitude.rollspeed * 57.2958,
+                attitude.pitchspeed * 57.2958,
+                attitude.yawspeed * 57.2958);
 }
