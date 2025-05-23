@@ -109,8 +109,10 @@ void mavlinkReceive() {
   while (MAVSerial.available()) {
     uint8_t c = MAVSerial.read();
     
-    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-      //Successfully received a complete message
+    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) 
+    { //Successfully received a complete message
+      //Reference: https://mavlink.io/en/messages/common.html
+      //Below are possible receiving message
       // 0 HeartBeat
       // 1 UNKNOWN
       // 2 SYSTIME TIME
