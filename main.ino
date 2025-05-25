@@ -13,15 +13,24 @@ uint8_t target_component = 1; //Default ArduPilot Component ID, optional to be 0
 HardwareSerial MAVSerial(2); // UART2 on ESP32
 
 //Timing variables
-bool debug_mode = true;
+bool debug_mode = false;
 unsigned long last_heartbeat_received = 0;
 unsigned long heartbeat_outdate_time = 2000;  //2s, if you think heartbeat is too long, change ardupilot parameter list
 unsigned long last_debug = 0;
-unsigned long debug_period = 300;  //0.3s
+unsigned long debug_period = 100;  //0.3s
 
 //Positioning Data
+//IMU: ICM-42688-P
+const float MILLI_G_TO_G = 0.001;
+const float G_TO_MS2 = 9.81;
+const float MILLI_RAD_TO_RAD = 0.001;
 mavlink_raw_imu_t imu_info;
+float peak_gyro_x = 0, peak_gyro_y = 0, peak_gyro_z = 0;
+unsigned long last_peak_reset = 0;
 mavlink_attitude_t attitude_info;
+mavlink_power_status_t power_info;
+mavlink_battery_status_t battery_info;
+mavlink_statustext_t statustext;
 
 void setup() {
   Serial.begin(57600);  //Debug console
@@ -46,30 +55,19 @@ void loop() {
     Serial.print((millis() - last_heartbeat_received)/1000.0);
     Serial.println("s ago");
   }
+  else
+  {
+    //sendArmCommand();
+  }
 
   //Debug Mode
   if(debug_mode)
   { //IMU Info
     if(millis() - last_debug >= debug_period)
     {
-      //IMU Info
-      // typedef struct __mavlink_raw_imu_t {
-      // uint64_t time_usec; /*< [us] Timestamp (UNIX Epoch time or time since system boot). The receiving end can infer timestamp format (since 1.1.1970 or since system boot) by checking for the magnitude of the number.*/
-      // int16_t xacc; /*<  X acceleration (raw)*/
-      // int16_t yacc; /*<  Y acceleration (raw)*/
-      // int16_t zacc; /*<  Z acceleration (raw)*/
-      // int16_t xgyro; /*<  Angular speed around X axis (raw)*/
-      // int16_t ygyro; /*<  Angular speed around Y axis (raw)*/
-      // int16_t zgyro; /*<  Angular speed around Z axis (raw)*/
-      // int16_t xmag; /*<  X Magnetic field (raw)*/
-      // int16_t ymag; /*<  Y Magnetic field (raw)*/
-      // int16_t zmag; /*<  Z Magnetic field (raw)*/
-      // uint8_t id; /*<  Id. Ids are numbered from 0 and map to IMUs numbered from 1 (e.g. IMU1 will have a message with id=0)*/
-      // int16_t temperature; /*< [cdegC] Temperature, 0: IMU does not provide temperature values. If the IMU is at 0C it must send 1 (0.01C).*/
-      // }) mavlink_raw_imu_t;
-      
-      printRawIMUInfo(imu_info);  //IMU info
-      printAttitude(attitude_info); //Attitude
+      //printIMUInfo(imu_info);  //IMU info
+      //printAttitudeInfo(attitude_info); //Attitude
+      printBatteryInfo(battery_info);
 
       //Last
       last_debug = millis(); //Updated last print time
@@ -98,6 +96,53 @@ void sendHeartbeat() {
   
   // Send the buffer
   MAVSerial.write(buf, len);
+}
+
+void sendArmCommand() {
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  
+  // MAV_CMD_COMPONENT_ARM_DISARM command
+  // param1: 1 = arm, 0 = disarm
+  // param2: 21196 = force arm (bypasses some safety checks)
+  mavlink_msg_command_long_pack(
+    system_id,           // System ID (your ESP)
+    component_id,        // Component ID (your ESP) 
+    &msg,                // Message buffer
+    target_system,       // Target system (ArduPilot)
+    target_component,    // Target component (ArduPilot)
+    MAV_CMD_COMPONENT_ARM_DISARM,  // Command ID
+    0,                   // Confirmation
+    1,                   // param1: 1 = ARM
+    21196,               // param2: 0 = normal arm (use 21196 for force)
+    0, 0, 0, 0, 0        // param3-7: unused
+  );
+  
+  // Send the message
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  MAVSerial.write(buf, len);
+  
+  Serial.println("ARM command sent!");
+}
+
+void sendDisarmCommand() {
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  
+  mavlink_msg_command_long_pack(
+    system_id, component_id, &msg,
+    target_system, target_component,
+    MAV_CMD_COMPONENT_ARM_DISARM,
+    0,
+    0,                   // param1: 0 = DISARM
+    0,                   // param2: 0 = normal disarm
+    0, 0, 0, 0, 0
+  );
+  
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  MAVSerial.write(buf, len);
+  
+  Serial.println("DISARM command sent!");
 }
 
 void mavlinkReceive() {
@@ -147,6 +192,16 @@ void mavlinkReceive() {
         case 30: //ATTITUDE
           mavlink_msg_attitude_decode(&msg, &attitude_info);
           break;
+        case 125: //POWER_STATUS
+          mavlink_msg_power_status_decode(&msg, &power_info);
+          break;
+        case 147: //BATTERY_STATUS
+          mavlink_msg_battery_status_decode(&msg, &battery_info);
+          break;
+        case 253: //STATUSTEXT
+          mavlink_msg_statustext_decode(&msg, &statustext);
+          Serial.printf("FC STATUS: %s\n", statustext.text);
+          break;
       }
     }
   }
@@ -154,21 +209,43 @@ void mavlinkReceive() {
 
 //Debug Function(s)
 //IMU
-void printRawIMUInfo(const mavlink_raw_imu_t& imu) {
-  Serial.print("IMU[");
-  Serial.print(imu.id);
-  Serial.print("] Acc:(");
-  Serial.print(imu.xacc); Serial.print(",");
-  Serial.print(imu.yacc); Serial.print(",");
-  Serial.print(imu.zacc);
-  Serial.print(") Gyro:(");
-  Serial.print(imu.xgyro); Serial.print(",");
-  Serial.print(imu.ygyro); Serial.print(",");
-  Serial.print(imu.zgyro);
-  Serial.print(") Mag:(");
-  Serial.print(imu.xmag); Serial.print(",");
-  Serial.print(imu.ymag); Serial.print(",");
-  Serial.print(imu.zmag);
+void printIMUInfo(const mavlink_raw_imu_t& imu) {
+  //Acceleration
+  float x_g = imu.xacc * MILLI_G_TO_G;  //Convert to G-unit
+  float y_g = imu.yacc * MILLI_G_TO_G;  
+  float z_g = imu.zacc * MILLI_G_TO_G;
+  float x_ms2 = x_g * G_TO_MS2;  //Convert to m/s²
+  float y_ms2 = y_g * G_TO_MS2;
+  float z_ms2 = z_g * G_TO_MS2;
+  Serial.printf("IMU[%d] Acc:(%.2f, %.2f, %.2f)m/s² ", imu.id, x_ms2, y_ms2, z_ms2);
+
+  //Gyro, ArduPilot RAW_IMU gyro is in milli-degrees/second
+  float x_rads = imu.xgyro * MILLI_RAD_TO_RAD;
+  float y_rads = imu.ygyro * MILLI_RAD_TO_RAD;
+  float z_rads = imu.zgyro * MILLI_RAD_TO_RAD;
+  float x_dps = x_rads * RAD_TO_DEG;
+  float y_dps = y_rads * RAD_TO_DEG;
+  float z_dps = z_rads * RAD_TO_DEG;
+  
+  //Track peak values
+  if (abs(x_dps) > peak_gyro_x) peak_gyro_x = abs(x_dps);
+  if (abs(y_dps) > peak_gyro_y) peak_gyro_y = abs(y_dps);
+  if (abs(z_dps) > peak_gyro_z) peak_gyro_z = abs(z_dps);
+  
+  float total_rotation = sqrt(x_dps*x_dps + y_dps*y_dps + z_dps*z_dps);
+  if (total_rotation > 50) {
+    Serial.print(" [FAST!]");
+  } else if (total_rotation > 20) {
+    Serial.print(" [ACTIVE]");
+  } else if (total_rotation > 5) {
+    Serial.print(" [MOVING]");
+  }
+  Serial.printf(" Gyro:(%.1f,%.1f,%.1f)°/s", x_dps, y_dps, z_dps);
+  // Serial.print(") Mag:(");
+  // Serial.print(imu.xmag); Serial.print(",");
+  // Serial.print(imu.ymag); Serial.print(",");
+  // Serial.print(imu.zmag);
+
   Serial.print(") Temp:");
   if (imu.temperature == 0) {
     Serial.print("N/A");
@@ -180,7 +257,7 @@ void printRawIMUInfo(const mavlink_raw_imu_t& imu) {
 }
 
 //Attitude
-void printAttitude(const mavlink_attitude_t& attitude) {
+void printAttitudeInfo(const mavlink_attitude_t& attitude) {
   float roll_deg = attitude.roll * 57.2958;
   float pitch_deg = attitude.pitch * 57.2958;
   float yaw_deg = attitude.yaw * 57.2958;
@@ -191,4 +268,37 @@ void printAttitude(const mavlink_attitude_t& attitude) {
                 attitude.rollspeed * 57.2958,
                 attitude.pitchspeed * 57.2958,
                 attitude.yawspeed * 57.2958);
+}
+
+//Battery
+void printBatteryInfo(const mavlink_battery_status_t& battery) {
+  //Voltage (convert from mV to V)
+  float voltage = battery.voltages[0] / 1000.0;
+  
+  //Current (convert from cA to A)
+  float current = battery.current_battery / 100.0;
+  
+  //Temperature (convert from cdegC to C)
+  float temp = battery.temperature / 100.0;
+  
+  //Consumed (already in mAh)
+  float consumed = battery.current_consumed;
+  
+  Serial.printf("BATTERY[%d] %.2fV %.2fA %d%% ", battery.id, voltage, current, battery.battery_remaining);
+  
+  Serial.printf("Consumed:%.0fmAh ", consumed);
+  
+  if (battery.temperature != INT16_MAX) {
+    Serial.printf("Temp:%.1f°C ", temp);
+  } else {
+    Serial.print("Temp:N/A ");
+  }
+  
+  if (battery.time_remaining > 0) {
+    Serial.printf("Time:%ds", battery.time_remaining);
+  } else {
+    Serial.print("Time:N/A");
+  }
+  
+  Serial.println();
 }
